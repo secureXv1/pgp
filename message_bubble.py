@@ -5,7 +5,7 @@ from PyQt5.QtGui import QColor, QPalette
 from datetime import datetime
 
 class MessageBubble(QWidget):
-    def __init__(self, text, sender, is_sender, timestamp=None):
+    def __init__(self, text, sender, is_sender, timestamp=None, url=None, link_handler=None):
         super().__init__()
 
         layout = QVBoxLayout()
@@ -18,16 +18,27 @@ class MessageBubble(QWidget):
             name_label.setStyleSheet("color: #555; font-weight: bold; font-size: 10px;")
             layout.addWidget(name_label)
 
-        # Texto
-        text_label = QLabel(text)
+        # Texto (puede incluir enlace)
+        text_label = QLabel()
+        if url:
+            text_label.setText(f'<a href="{url}">{text}</a>')
+            text_label.setTextFormat(Qt.RichText)
+            text_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            text_label.setOpenExternalLinks(False)
+            if link_handler:
+                text_label.linkActivated.connect(lambda _: link_handler(url, text))
+        else:
+            text_label.setText(text)
         text_label.setWordWrap(True)
         text_label.setStyleSheet("""
+            color: #FFF;
             padding: 6px;
-            background-color: #DCF8C6;
+            background-color: #00BCD4;
             border-radius: 8px;
         """ if is_sender else """
+            color: #FFF;
             padding: 6px;
-            background-color: #FFF;
+            background-color: #444;
             border-radius: 8px;
         """)
         layout.addWidget(text_label)
@@ -48,4 +59,4 @@ class MessageBubble(QWidget):
         else:
             layout.setAlignment(Qt.AlignLeft)
 
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)

@@ -64,6 +64,8 @@ class TunnelPanel(QWidget):
         self.sistema = sistema
         self.parent = parent
         self.conexiones_tuneles = {}
+        self.participants = {}
+        self.files = {}
         self.cliente = None
 
         from db_cliente import get_client_uuid
@@ -115,6 +117,7 @@ class TunnelPanel(QWidget):
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.cerrar_pestana_tunel)
+        self.tab_widget.currentChanged.connect(self._tab_changed)
         main_layout.addWidget(self.tab_widget, 4)
 
         # ==== PANEL DERECHO (Participantes y Archivos) ====
@@ -134,6 +137,7 @@ class TunnelPanel(QWidget):
 
         self.files_list = QListWidget()
         self.files_list.setFixedWidth(215)
+        self.files_list.itemDoubleClicked.connect(self._download_file_from_list)
         right_panel.addWidget(self.files_list)
 
         right_container = QWidget()
@@ -250,8 +254,6 @@ class TunnelPanel(QWidget):
             self.cliente.connect()
             registrar_alias_cliente(uuid, tunel["id"], alias)
 
-            self.users_list.addItem(f"{alias} (tú)")
-
             tab = QWidget()
             layout = QVBoxLayout(tab)
 
@@ -266,7 +268,13 @@ class TunnelPanel(QWidget):
             header_layout.addWidget(btn_close)
 
             from chat_window import ChatWindow
-            chat_window = ChatWindow(alias=alias, client=self.cliente, tunnel_id=tunel["id"], uuid=uuid)
+            chat_window = ChatWindow(
+                alias=alias,
+                client=self.cliente,
+                tunnel_id=tunel["id"],
+                uuid=uuid,
+                on_file_event=self.handle_file_event,
+            )
 
             layout.addLayout(header_layout)
             layout.addWidget(chat_window)
@@ -276,15 +284,25 @@ class TunnelPanel(QWidget):
 
             self.conexiones_tuneles[tunel["id"]] = {
                 "cliente": self.cliente,
-                "chat": chat_window 
+                "chat": chat_window,
+                "tab": tab,
+                "alias": alias,
             }
+
+            self.fetch_participants(tunel["id"])
+            self.fetch_files(tunel["id"])
+            self.update_side_lists(tunel["id"])
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error de conexión:\n{e}")
 
     def recibir_mensaje(self, mensaje):
         try:
-            data = json.loads(mensaje)
+            try:
+                data = json.loads(mensaje)
+            except json.JSONDecodeError:
+                import ast
+                data = ast.literal_eval(mensaje)
             tunel_id = data.get("tunnel_id")
 
             if tunel_id not in self.conexiones_tuneles:
@@ -399,9 +417,6 @@ class TunnelPanel(QWidget):
             self.cliente.connect()
             registrar_alias_cliente(uuid, tunel["id"], alias)
 
-
-            self.users_list.addItem(f"{alias} (tú)")
-
             # Crear la pestaña visual del chat
             tab = QWidget()
             layout = QVBoxLayout(tab)
@@ -417,7 +432,13 @@ class TunnelPanel(QWidget):
             header_layout.addWidget(btn_close)
 
             from chat_window import ChatWindow
-            chat_window = ChatWindow(alias=alias, client=self.cliente, tunnel_id=tunel["id"], uuid=uuid)
+            chat_window = ChatWindow(
+                alias=alias,
+                client=self.cliente,
+                tunnel_id=tunel["id"],
+                uuid=uuid,
+                on_file_event=self.handle_file_event,
+            )
 
             layout.addLayout(header_layout)
             layout.addWidget(chat_window)
@@ -427,8 +448,15 @@ class TunnelPanel(QWidget):
 
             self.conexiones_tuneles[tunel["id"]] = {
                 "cliente": self.cliente,
-                "chat_area": chat_window.chat_area  # Referencia al QTextEdit dentro de ChatWindow
+                "chat": chat_window,
+                "chat_area": chat_window.chat_area,  # compatibilidad
+                "tab": tab,
+                "alias": alias,
             }
+
+            self.fetch_participants(tunel["id"])
+            self.fetch_files(tunel["id"])
+            self.update_side_lists(tunel["id"])
 
             dialog.accept()
 
@@ -443,14 +471,19 @@ class TunnelPanel(QWidget):
             except:
                 pass
             del self.conexiones_tuneles[tunel_id]
+            self.participants.pop(tunel_id, None)
+            self.files.pop(tunel_id, None)
         idx = self.tab_widget.indexOf(tab)
         if idx >= 0:
             self.tab_widget.removeTab(idx)
+        if not self.tab_widget.count():
+            self.users_list.clear()
+            self.files_list.clear()
 
     def cerrar_pestana_tunel(self, index):
         tab = self.tab_widget.widget(index)
         for tunel_id, data in self.conexiones_tuneles.items():
-            if data.get("chat_area").parent() == tab:
+            if data.get("tab") == tab:
                 self.desconectar_tunel(tab, tunel_id)
                 break
 
@@ -469,3 +502,100 @@ class TunnelPanel(QWidget):
             input_field.clear()
         except Exception as e:
             chat_area.append(f"⚠️ Error al enviar mensaje: {e}")
+
+    # ---- Gestión de participantes y archivos ----
+    def current_tunnel_id(self):
+        tab = self.tab_widget.currentWidget()
+        for tid, data in self.conexiones_tuneles.items():
+            if data.get("tab") == tab:
+                return tid
+        return None
+
+    def _tab_changed(self, index):
+        tid = self.current_tunnel_id()
+        if tid:
+            self.update_side_lists(tid)
+
+    def fetch_participants(self, tunnel_id):
+        """Fill ``self.participants`` with a list of aliases for ``tunnel_id``."""
+        import requests
+        current_alias = self.conexiones_tuneles.get(tunnel_id, {}).get("alias")
+        participantes = []
+        try:
+            resp = requests.get(
+                f"http://symbolsaps.ddns.net:8000/api/tunnels/{tunnel_id}/participants"
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    participantes = (
+                        data.get("participants")
+                        or data.get("data")
+                        or list(data)
+                    )
+                else:
+                    participantes = data
+        except Exception as e:
+            print("⚠️ Error obteniendo participantes:", e)
+
+        if not isinstance(participantes, list):
+            participantes = [participantes]
+
+        # Añadir nuestro propio alias si no está presente
+        if current_alias and all(
+            (isinstance(p, dict) and p.get("alias") != current_alias)
+            or (not isinstance(p, dict) and p != current_alias)
+            for p in participantes
+        ):
+            participantes.append({"alias": current_alias})
+
+        self.participants[tunnel_id] = participantes
+
+    def fetch_files(self, tunnel_id):
+        import requests
+        try:
+            resp = requests.get(f"http://symbolsaps.ddns.net:8000/api/tunnels/{tunnel_id}/files")
+            if resp.status_code == 200:
+                self.files[tunnel_id] = resp.json()
+            else:
+                self.files[tunnel_id] = []
+        except Exception as e:
+            print("⚠️ Error obteniendo archivos:", e)
+            self.files[tunnel_id] = []
+
+    def update_side_lists(self, tunnel_id):
+        self.users_list.clear()
+        for usuario in self.participants.get(tunnel_id, []):
+            alias = usuario.get("alias") if isinstance(usuario, dict) else usuario
+            current_alias = self.conexiones_tuneles.get(tunnel_id, {}).get("alias")
+            if alias == current_alias:
+                alias = f"{alias} (tú)"
+            self.users_list.addItem(alias)
+
+        self.files_list.clear()
+        for archivo in self.files.get(tunnel_id, []):
+            nombre = archivo.get("filename") if isinstance(archivo, dict) else archivo
+            item = QListWidgetItem(nombre)
+            item.setData(Qt.UserRole, archivo)
+            self.files_list.addItem(item)
+
+    def handle_file_event(self, tunnel_id, nombre, url):
+        entry = {"filename": nombre, "url": url}
+        self.files.setdefault(tunnel_id, []).append(entry)
+        if self.current_tunnel_id() == tunnel_id:
+            item = QListWidgetItem(nombre)
+            item.setData(Qt.UserRole, entry)
+            self.files_list.addItem(item)
+
+    def _download_file_from_list(self, item):
+        info = item.data(Qt.UserRole)
+        if not isinstance(info, dict):
+            return
+        url = info.get("url")
+        nombre = info.get("filename") or info.get("name")
+        tid = self.current_tunnel_id()
+        if tid and tid in self.conexiones_tuneles:
+            chat = self.conexiones_tuneles[tid].get("chat")
+            if chat:
+                chat.download_file(url, nombre)
+
