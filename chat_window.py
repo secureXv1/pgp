@@ -3,6 +3,8 @@ import base64
 import json
 import requests
 import time
+
+BASE_SERVER = "http://symbolsaps.ddns.net:8000"
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QFileDialog, QHBoxLayout, QScrollArea, QSpacerItem, QSizePolicy
 )
@@ -84,8 +86,8 @@ class ChatWindow(QWidget):
                 "enviado_en": int(time.time() * 1000)
             }
             try:
-                # Solo envías por socket, y TunnelClient se encarga de registrar
-                self.client.send(json.dumps(mensaje) + "\n")
+                # Envío directo del objeto; TunnelClient gestionará el formateo
+                self.client.send(mensaje)
                 self.mostrar_mensaje(texto, self.alias, True, int(time.time() * 1000))
                 self.input_field.clear()
 
@@ -110,10 +112,10 @@ class ChatWindow(QWidget):
                     "tunnel_id": self.tunnel_id,
                     "uuid": get_client_uuid()
                 }
-                response = requests.post("http://symbolsaps.ddns.net:8000/api/upload-file", files=files, data=data)
+                response = requests.post(f"{BASE_SERVER}/api/upload-file", files=files, data=data)
 
             if response.status_code != 200:
-                self.mostrar_mensaje("⚠️ Error al subir el archivo al servidor")
+                self.mostrar_mensaje("⚠️ Error al subir el archivo al servidor", "Sistema", True)
                 return
 
             resp_json = response.json()
@@ -123,29 +125,32 @@ class ChatWindow(QWidget):
             # Enviar por socket solo los metadatos, sin incluir el contenido del archivo
             mensaje = {
                 "type": "file",
+                "tipo": "file",
                 "from": self.alias,
+                "alias": self.alias,
                 "uuid": get_client_uuid(),
                 "tunnel_id": self.tunnel_id,
                 "filename": filename,
                 "url": url,
+                "contenido": url,
                 "enviado_en": int(time.time() * 1000)
             }
-            self.client.send(json.dumps(mensaje) + "\n")
+            self.client.send(mensaje)
             self.mostrar_mensaje(f"{filename} 📎", self.alias, True, int(time.time() * 1000))
 
         except Exception as e:
-            self.mostrar_mensaje(f"⚠️ Error al adjuntar archivo: {e}")
+            self.mostrar_mensaje(f"⚠️ Error al adjuntar archivo: {e}", "Sistema", True)
 
 
     def procesar_mensaje(self, mensaje_json):
         try:
             mensaje = json.loads(mensaje_json)
-            tipo = mensaje.get("type", "text")
-            remitente = mensaje.get("from", "Desconocido")
+            tipo = mensaje.get("type", mensaje.get("tipo", "text"))
+            remitente = mensaje.get("from", mensaje.get("alias", "Desconocido"))
 
-            if tipo == "text":
-                texto = mensaje.get("text", "")
-                self.mostrar_mensaje(f"{remitente}: {texto}")
+            if tipo == "text" or tipo == "texto":
+                texto = mensaje.get("text") or mensaje.get("contenido", "")
+                self.mostrar_mensaje(texto, remitente, False, mensaje.get("enviado_en"))
 
             elif tipo == "file":
                 nombre = mensaje.get("filename", "archivo")
@@ -159,9 +164,13 @@ class ChatWindow(QWidget):
                 self.mostrar_mensaje(f"{remitente} envió un archivo: {nombre} 📎", remitente, False, mensaje.get("enviado_en"))
 
                 # Intentar descargar al instante
-                respuesta = requests.get(f"http://symbolsaps.ddns.net:8000{url}", stream=True)
+                if url.startswith("http"):
+                    full_url = url
+                else:
+                    full_url = f"{BASE_SERVER}{url}"
+                respuesta = requests.get(full_url, stream=True)
                 if respuesta.status_code != 200:
-                    self.mostrar_mensaje("⚠️ No se pudo descargar el archivo.")
+                    self.mostrar_mensaje("⚠️ No se pudo descargar el archivo.", "Sistema", True)
                     return
 
                 # Preguntar dónde guardar el archivo
@@ -180,7 +189,7 @@ class ChatWindow(QWidget):
                         downloaded = 0
                         for chunk in respuesta.iter_content(chunk_size=8192):
                             if progress.wasCanceled():
-                                self.mostrar_mensaje("⛔ Descarga cancelada por el usuario.")
+                                self.mostrar_mensaje("⛔ Descarga cancelada por el usuario.", "Sistema", True)
                                 return
                             f.write(chunk)
                             downloaded += len(chunk)

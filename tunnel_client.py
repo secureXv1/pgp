@@ -71,23 +71,31 @@ class TunnelClient:
                 msg_dict = message
                 message = json.dumps(message)
 
+            # Para mensajes de texto enviamos exactamente lo que se recibe,
+            # sin campos adicionales, pues el servidor espera un formato
+            # sencillo y almacena solo el contenido del campo "text".
+            if msg_dict.get("type") == "text" and "text" in msg_dict:
+                message = json.dumps(msg_dict)
+
             # Enviar por socket
             self.socket.sendall((message + "\n").encode())
 
-            # Solo registrar si es texto
-            if msg_dict.get("type") == "text" and "text" in msg_dict:
-                mensaje_texto = {
-                    "tipo": "texto",
-                    "contenido": msg_dict["text"],  # Solo el contenido textual
-                    "tunnel_id": msg_dict["tunnel_id"],
-                    "uuid": msg_dict["uuid"],
-                    "alias": msg_dict["from"]
-                }
-                try:
-                    import requests
-                    requests.post("http://symbolsaps.ddns.net:8000/api/messages/save", json=mensaje_texto)
-                except Exception as e:
-                    print("⚠️ Error registrando mensaje:", e)
+
+            # El servidor remoto ya registra los mensajes recibidos. Evitamos
+            # duplicarlos enviando una petición HTTP adicional.
+            # if msg_dict.get("type") == "text" and "text" in msg_dict:
+            #     mensaje_texto = {
+            #         "tipo": "texto",
+            #         "contenido": msg_dict["text"],  # Solo el contenido textual
+            #         "tunnel_id": msg_dict["tunnel_id"],
+            #         "uuid": msg_dict["uuid"],
+            #         "alias": msg_dict["from"]
+            #     }
+            #     try:
+            #         import requests
+            #         requests.post("http://symbolsaps.ddns.net:8000/api/messages/save", json=mensaje_texto)
+            #     except Exception as e:
+            #         print("⚠️ Error registrando mensaje:", e)
 
         except Exception as e:
             print("❌ Error al enviar mensaje:", e)
